@@ -6,11 +6,18 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 export default function Home() {
   const [file, setFile] = useState(null as ArrayBuffer | null);
   const [sliceIndex, setSliceIndex] = useState(0); // track the current slice
+  const [sliceIndey, setSliceIndey] = useState(0);
+  const [sliceIndez, setSliceIndez] = useState(0);
   const [points, setPoints] = useState([] as number[][]);
   useEffect(() => {
+    document.querySelectorAll("canvas").forEach((canvas) => { 
+      if(canvas.hasAttribute("data-engine")){
+        canvas.remove();
+      }
+    });
     if (points.length > 0) {
       let posPoints = points.map((point) => {
-        return [point[0] -125, point[1] -125, point[2] -125];
+        return [point[0] - 125, point[1] - 125, point[2] - 125];
       });
       let colors = points.map((point) => {
         return [point[3] / 255, point[3] / 255, point[3] / 255];
@@ -54,6 +61,7 @@ export default function Home() {
   useEffect(() => {
     if (file) {
       DisplayResults(file);
+
     }
   }, [file]);
   function UpdatePointArray(
@@ -85,7 +93,7 @@ export default function Home() {
             );
           }
           let normalizedValue = pixelValue;
-          const maxRange = 400; 
+          const maxRange = 400;
           // if the pixel values are in the range [0, 1], we can directly use them
           if (pixelValue <= 1) {
             normalizedValue = pixelValue * 255;
@@ -124,8 +132,9 @@ export default function Home() {
 
         const niftiImage = nif.readImage(niftiHeader, file);
         const slices = niftiHeader.dims[3];
+        const cols = niftiHeader.dims[1];
+        const rows = niftiHeader.dims[2];
         UpdatePointArray(niftiHeader, niftiImage);
-        console.log("Number of slices:", slices);
         const layer = document.getElementById("layer") as HTMLInputElement;
         if (layer) {
           layer.max = (slices - 1).toString();
@@ -134,6 +143,26 @@ export default function Home() {
             const slice = parseInt(layer.value);
             setSliceIndex(slice); // update slice index on slider
             Draw(slice, niftiHeader, niftiImage);
+          };
+        }
+        const layery = document.getElementById("layery") as HTMLInputElement;
+        if (layery) {
+          layery.max = (cols - 1).toString();
+          layery.value = "0";
+          layery.oninput = function () {
+            const slice = parseInt(layery.value);
+            setSliceIndey(slice); // update slice index on slider
+            DrawY(slice, niftiHeader, niftiImage);
+          };
+        }
+        const layerz = document.getElementById("layerz") as HTMLInputElement;
+        if (layerz) {
+          layerz.max = (rows - 1).toString();
+          layerz.value = "0";
+          layerz.oninput = function () {
+            const slice = parseInt(layerz.value);
+            setSliceIndez(slice); // update slice index on slider
+            DrawZ(slice, niftiHeader, niftiImage);
           };
         }
 
@@ -147,7 +176,141 @@ export default function Home() {
       alert("Error processing the file. Please check the console for details.");
     }
   }
+  function DrawZ(    row: number,
+    header: nif.NIFTI1 | nif.NIFTI2,
+    image: ArrayBuffer) {
+      const canvas = document.getElementById("resultz") as HTMLCanvasElement;
+    if (!canvas) {
+      console.error("Canvas element not found.");
+      return;
+    }
+    const cols = header.dims[1];
+    const rows = header.dims[2];
+    const slices = header.dims[3];
+    canvas.width = rows;
+    canvas.height = slices;
 
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      console.error("Failed to get canvas context.");
+      return;
+    }
+
+    const imageData = ctx.createImageData(rows, slices); // create ImageData for the correct canvas size
+    const dataView = new DataView(image);
+
+    // define possible ranges based on datatype and expected intensity ranges
+    const maxRange = 400; // image range pixel values
+    for (let slice = 0; slice < slices; slice++) {
+      for (let col = 0; col < cols; col++) {
+        //slice is x, row is y, col is z
+        const pixelIndex = slice * cols * rows + row * cols + col;
+        let pixelValue: number;
+
+        // Get the pixel value based on data type
+        if (header.datatypeCode === nif.NIFTI1.TYPE_UINT16) {
+          pixelValue = dataView.getUint16(pixelIndex * 2, true);
+        } else if (header.datatypeCode === nif.NIFTI1.TYPE_FLOAT32) {
+          pixelValue = dataView.getFloat32(pixelIndex * 4, true);
+        } else if (header.datatypeCode === nif.NIFTI1.TYPE_UINT8) {
+          pixelValue = dataView.getUint8(pixelIndex);
+        } else {
+          pixelValue = 0; // default if datatype is unsupported
+          console.warn("Unsupported NIFTI data type: ", header.datatypeCode);
+        }
+
+        // normalize pixel values based on their range (0 to 1 if already between 0 and 1)
+        let normalizedValue = pixelValue;
+
+        // if the pixel values are in the range [0, 1], we can directly use them
+        if (pixelValue <= 1) {
+          normalizedValue = pixelValue * 255;
+        } else {
+          // normalize pixel value if it is in a different range (e.g., [0, 400] or [0, 65535])
+          normalizedValue = Math.min(
+            Math.max((pixelValue / maxRange) * 255, 0),
+            255
+          );
+        }
+        const index = (col * slices + slice ) * 4; // pixel get rgb values
+
+        // Set the pixel to grayscale (since it's medical image data)
+        imageData.data[index] = normalizedValue;
+        imageData.data[index + 1] = normalizedValue;
+        imageData.data[index + 2] = normalizedValue;
+        imageData.data[index + 3] = 255; // full opacity
+      }
+    }
+    ctx.putImageData(imageData, 0, 0);
+  }
+  function DrawY(    col: number,
+    header: nif.NIFTI1 | nif.NIFTI2,
+    image: ArrayBuffer) {
+      const canvas = document.getElementById("resulty") as HTMLCanvasElement;
+    if (!canvas) {
+      console.error("Canvas element not found.");
+      return;
+    }
+    const cols = header.dims[1];
+    const rows = header.dims[2];
+    const slices = header.dims[3];
+    canvas.width = rows;
+    canvas.height = slices;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      console.error("Failed to get canvas context.");
+      return;
+    }
+
+    const imageData = ctx.createImageData(rows, slices); // create ImageData for the correct canvas size
+    const dataView = new DataView(image);
+
+    // define possible ranges based on datatype and expected intensity ranges
+    const maxRange = 400; // image range pixel values
+    for (let slice = 0; slice < slices; slice++) {
+      for (let row = 0; row < rows; row++) {
+        //slice is x, row is y, col is z
+        const pixelIndex = slice * cols * rows + row * cols + col;
+        let pixelValue: number;
+
+        // Get the pixel value based on data type
+        if (header.datatypeCode === nif.NIFTI1.TYPE_UINT16) {
+          pixelValue = dataView.getUint16(pixelIndex * 2, true);
+        } else if (header.datatypeCode === nif.NIFTI1.TYPE_FLOAT32) {
+          pixelValue = dataView.getFloat32(pixelIndex * 4, true);
+        } else if (header.datatypeCode === nif.NIFTI1.TYPE_UINT8) {
+          pixelValue = dataView.getUint8(pixelIndex);
+        } else {
+          pixelValue = 0; // default if datatype is unsupported
+          console.warn("Unsupported NIFTI data type: ", header.datatypeCode);
+        }
+
+        // normalize pixel values based on their range (0 to 1 if already between 0 and 1)
+        let normalizedValue = pixelValue;
+
+        // if the pixel values are in the range [0, 1], we can directly use them
+        if (pixelValue <= 1) {
+          normalizedValue = pixelValue * 255;
+        } else {
+          // normalize pixel value if it is in a different range (e.g., [0, 400] or [0, 65535])
+          normalizedValue = Math.min(
+            Math.max((pixelValue / maxRange) * 255, 0),
+            255
+          );
+        }
+        const index = (row * slices + slice ) * 4; // pixel get rgb values
+
+        // Set the pixel to grayscale (since it's medical image data)
+        imageData.data[index] = normalizedValue;
+        imageData.data[index + 1] = normalizedValue;
+        imageData.data[index + 2] = normalizedValue;
+        imageData.data[index + 3] = 255; // full opacity
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0); // directly render the pixel data
+  }
   function Draw(
     slice: number,
     header: nif.NIFTI1 | nif.NIFTI2,
@@ -225,35 +388,62 @@ export default function Home() {
   return (
     <div className={`flex flex-col items-center align-middle w-full`}>
       <div className="w-full flex justify-center items-center">
-        <div className="w-[20%] flex flex-col items-center">
-          <p>Upload a File</p>
-          <input
-            type="file"
-            onChange={async (e) => {
-              try {
-                if (e.target.files && e.target.files[0]) {
-                  const file = await e.target.files[0].arrayBuffer();
-                  setFile(file);
-                } else {
-                  console.error("No file selected.");
-                  alert("Please select a valid file.");
-                }
-              } catch (error) {
-                console.error("Error reading file:", error);
-                alert(
-                  "An error occurred while reading the file. Please try again."
-                );
-              }
-            }}
-          />
-          <input type="range" id="layer" />
+        <div className="w-[20%] flex flex-col justify-center gap-[5%] h-screen items-center border-r-2 border-white">
           <div>
-            <p>
-              Current Slice: <span>{sliceIndex + 1}</span>
-            </p>{" "}
-            {}
+            Input NIFTI file:
+            <input
+              type="file"
+              onChange={async (e) => {
+                try {
+                  if (e.target.files && e.target.files[0]) {
+                    const file = await e.target.files[0].arrayBuffer();
+                    setFile(file);
+                  } else {
+                    console.error("No file selected.");
+                    alert("Please select a valid file.");
+                  }
+                } catch (error) {
+                  console.error("Error reading file:", error);
+                  alert(
+                    "An error occurred while reading the file. Please try again."
+                  );
+                }
+              }}
+            />
           </div>
+          <div className="flex flex-col items-center w-full text-xl">
+            <p>x</p>
+            <input type="range" id="layer" />
+            <div>
+              <p>
+                Current Slice: <span>{sliceIndex + 1}</span>
+              </p>{" "}
+              {}
+            </div>
+          </div>
+          <div className="flex flex-col items-center w-full text-xl">
+            <p>y</p>
+            <input type="range" id="layery" />
+            <div>
+              <p>
+                Current Slice: <span>{sliceIndey + 1}</span>
+              </p>{" "}
+              {}
+            </div>
+          </div>
+          <div className="flex flex-col items-center w-full text-xl">
+            <p>z</p>
+            <input type="range" id="layerz" />
+            <div>
+              <p>
+                Current Slice: <span>{sliceIndez + 1}</span>
+              </p>{" "}
+              {}
+            </div>
+          </div>
+
           <button
+            className="w-[80%] rounded-md bg-gray-500"
             onClick={async () => {
               try {
                 if (!file) {
@@ -286,11 +476,19 @@ export default function Home() {
             Run model on scan
           </button>
         </div>
-        <canvas id="result" className="w-[80%] h-screen"></canvas>
-        <div className=" w-full h-screen bg-red-500">
-          <div className="w-full h-full">
-            <canvas id="result" className="w-full h-full"></canvas>
-          </div>
+        <canvas
+          id="result"
+          className="w-[80%] h-screen border-white border-2"
+        ></canvas>
+        <div id="result" className="w-[80%] h-screen flex flex-col gap-5 ">
+          <canvas
+            className="w-full h-[50%]  border-white border-2 rotate-180"
+            id="resulty"
+          ></canvas>
+          <canvas
+            className="w-full h-[50%]  border-white border-2 "
+            id="resultz"
+          ></canvas>
         </div>
       </div>
     </div>
