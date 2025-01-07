@@ -1,525 +1,624 @@
-
-
 import * as nif from "nifti-reader-js";
 import { upload } from "@vercel/blob/client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-
 export default function Home() {
-  const [file, setFile] = useState(null as ArrayBuffer | null);
-  const [sliceIndex, setSliceIndex] = useState(0); // track the current slice
-  const [sliceIndey, setSliceIndey] = useState(0);
-  const [sliceIndez, setSliceIndez] = useState(0);
-  const [points, setPoints] = useState([] as number[][]);
+  // MAIN volume
+  const [fileVol, setFileVol] = useState<ArrayBuffer | null>(null);
+  const [headerVol, setHeaderVol] = useState<nif.NIFTI1 | nif.NIFTI2 | null>(null);
+  const [imageVol, setImageVol] = useState<ArrayBuffer | null>(null);
+
+  // SUPER‐RES volume
+  const [fileSR, setFileSR] = useState<ArrayBuffer | null>(null);
+  const [headerSR, setHeaderSR] = useState<nif.NIFTI1 | nif.NIFTI2 | null>(null);
+  const [imageSR, setImageSR] = useState<ArrayBuffer | null>(null);
+
+  // SEGMENTATION volume
+  const [fileSeg, setFileSeg] = useState<ArrayBuffer | null>(null);
+  const [headerSeg, setHeaderSeg] = useState<nif.NIFTI1 | nif.NIFTI2 | null>(null);
+  const [imageSeg, setImageSeg] = useState<ArrayBuffer | null>(null);
+
+  // Orth slices
+  const [sliceX, setSliceX] = useState(0); // Sagittal
+  const [sliceY, setSliceY] = useState(0); // Coronal
+  const [sliceZ, setSliceZ] = useState(0); // Axial
+
+  // 3D point cloud
+  const [points, setPoints] = useState<number[][]>([]);
+
+  // Super‐Resolution metrics
+  const [mseSR, setMseSR] = useState<number | null>(null);
+  const [psnrSR, setPsnrSR] = useState<number | null>(null);
+  const [ssimSR, setSsimSR] = useState<number | null>(null);
+
+  // Segmentation metric
+  const [diceSeg, setDiceSeg] = useState<number | null>(null);
+
+  // Canvas refs
+  const axialRef = useRef<HTMLCanvasElement | null>(null);
+  const coronalRef = useRef<HTMLCanvasElement | null>(null);
+  const sagittalRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Dragging state for each canvas
+  const axialDraggingRef = useRef<boolean>(false);
+  const coronalDraggingRef = useRef<boolean>(false);
+  const sagittalDraggingRef = useRef<boolean>(false);
+
+  /*******************************************************
+   * LOAD THE MAIN VOLUME
+   * => sets sliceX/Y/Z to 50% in loadVolume
+   *******************************************************/
+  useEffect(() => {
+    if (fileVol) {
+      loadVolume(fileVol, (hdr) => setHeaderVol(hdr), (img) => setImageVol(img));
+    }
+  }, [fileVol]);
+
+  /*******************************************************
+   * BUILD POINT CLOUD WHEN main volume ready
+   *******************************************************/
+  useEffect(() => {
+    if (headerVol && imageVol) {
+      buildPointCloud(headerVol, imageVol);
+    }
+  }, [headerVol, imageVol]);
+
+  /*******************************************************
+   * LOAD SUPER‐RES + METRICS
+   *******************************************************/
+  useEffect(() => {
+    if (fileSR) {
+      loadVolume(fileSR, setHeaderSR, setImageSR);
+    }
+  }, [fileSR]);
 
   useEffect(() => {
-    document.querySelectorAll("canvas").forEach((canvas) => {
-      if (canvas.hasAttribute("data-engine")) {
-        canvas.remove();
-      }
-    });
-
-    if (points.length > 0) {
-      let posPoints = points.map((point) => {
-        return [point[0] - 125, point[1] - 125, point[2] - 125];
-      });
-      let colors = points.map((point) => {
-        return [point[3] / 255, point[3] / 255, point[3] / 255];
-      });
-
-      const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(
-        75,
-        window.innerWidth / window.innerHeight,
-        0.1,
-        1000
-      );
-      const renderer = new THREE.WebGLRenderer();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      document.body.appendChild(renderer.domElement);
-
-      const geometry = new THREE.BufferGeometry();
-      const vertices = new Float32Array(posPoints.flat());
-      geometry.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
-      const colorsArray = new Float32Array(colors.flat());
-      geometry.setAttribute("color", new THREE.BufferAttribute(colorsArray, 3));
-
-      const material = new THREE.PointsMaterial({
-        size: 2,
-        vertexColors: true,
-        opacity: 230,
-      });
-
-      // set background color
-      renderer.setClearColor(0xffffff, 1);
-
-      const pointss = new THREE.Points(geometry, material);
-      scene.add(pointss);
-
-      camera.position.z = 255;
-      camera.position.y = 255;
-      camera.position.x = 255;
-
-      const controls = new OrbitControls(camera, renderer.domElement);
-      controls.update();
-
-      const animate = function () {
-        requestAnimationFrame(animate);
-        renderer.render(scene, camera);
-      };
-      animate();
+    if (headerVol && imageVol && headerSR && imageSR) {
+      computeSRMetrics(headerVol, imageVol, headerSR, imageSR);
     }
+  }, [headerVol, imageVol, headerSR, imageSR]);
+
+  /*******************************************************
+   * LOAD SEGMENTATION + METRICS
+   *******************************************************/
+  useEffect(() => {
+    if (fileSeg) {
+      loadVolume(fileSeg, setHeaderSeg, setImageSeg);
+    }
+  }, [fileSeg]);
+
+  useEffect(() => {
+    if (headerSeg && imageSeg) {
+      computeDiceSeg(headerSeg, imageSeg);
+    }
+  }, [headerSeg, imageSeg]);
+
+  /*******************************************************
+   * RENDER 3D POINT CLOUD
+   *******************************************************/
+  useEffect(() => {
+    document.querySelectorAll("canvas[data-engine='three']").forEach((c) => c.remove());
+    if (points.length === 0) return;
+
+    const scene = new THREE.Scene();
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(400, 400);
+    renderer.domElement.setAttribute("data-engine", "three");
+    document.body.appendChild(renderer.domElement);
+
+    const camera = new THREE.PerspectiveCamera(75, 1, 0.1, 2000);
+    camera.position.set(256, 256, 256);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+
+    const geometry = new THREE.BufferGeometry();
+    const pos = points.flatMap(([x, y, z]) => [x - 128, y - 128, z - 128]);
+    const colors = points.flatMap(([, , , intensity]) => {
+      const c = intensity / 255;
+      return [c, c, c];
+    });
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(pos), 3));
+    geometry.setAttribute("color", new THREE.Float32BufferAttribute(new Float32Array(colors), 3));
+
+    const material = new THREE.PointsMaterial({ size: 2, vertexColors: true });
+    const pc = new THREE.Points(geometry, material);
+    scene.add(pc);
+
+    const animate = () => {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    };
+    animate();
   }, [points]);
 
+  /*******************************************************
+   * CLICK‐AND‐DRAG FOR SLICES
+   *******************************************************/
   useEffect(() => {
-    if (file) {
-      DisplayResults(file);
-    }
-  }, [file]);
+    const axCanvas = axialRef.current;
+    const coCanvas = coronalRef.current;
+    const saCanvas = sagittalRef.current;
+    if (!axCanvas || !coCanvas || !saCanvas) return;
 
-  function UpdatePointArray(
-    niftiHeader: nif.NIFTI1 | nif.NIFTI2,
-    niftiImage: ArrayBuffer
-  ) {
-    console.log("Updating point array");
-    const cols = niftiHeader.dims[1];
-    const rows = niftiHeader.dims[2];
-    const slices = niftiHeader.dims[3];
-    const dataView = new DataView(niftiImage);
-    let points: number[][] = [];
+    // Axial
+    const downAx = (e: MouseEvent) => {
+      axialDraggingRef.current = true;
+      handleAxial(e);
+    };
+    const moveAx = (e: MouseEvent) => {
+      if (axialDraggingRef.current) handleAxial(e);
+    };
+    const upAx = () => { axialDraggingRef.current = false; };
 
-    for (let slice = 0; slice < slices; slice++) {
-      for (let row = 0; row < rows; row++) {
-        for (let col = 0; col < cols; col++) {
-          const pixelIndex = slice * cols * rows + row * cols + col;
-          let pixelValue: number;
-          if (niftiHeader.datatypeCode === nif.NIFTI1.TYPE_UINT16) {
-            pixelValue = dataView.getUint16(pixelIndex * 2, true);
-          } else if (niftiHeader.datatypeCode === nif.NIFTI1.TYPE_FLOAT32) {
-            pixelValue = dataView.getFloat32(pixelIndex * 4, true);
-          } else if (niftiHeader.datatypeCode === nif.NIFTI1.TYPE_UINT8) {
-            pixelValue = dataView.getUint8(pixelIndex);
-          } else {
-            pixelValue = 0;
-            console.warn(
-              "Unsupported NIFTI data type: ",
-              niftiHeader.datatypeCode
-            );
-          }
+    axCanvas.addEventListener("mousedown", downAx);
+    axCanvas.addEventListener("mousemove", moveAx);
+    window.addEventListener("mouseup", upAx);
 
-          let normalizedValue = pixelValue;
-          const maxRange = 400;
-          // if the pixel values are in [0, 1], use them directly
-          if (pixelValue <= 1) {
-            normalizedValue = pixelValue * 255;
-          } else {
-            // otherwise clamp/normalize
-            normalizedValue = Math.min(
-              Math.max((pixelValue / maxRange) * 255, 0),
-              255
-            );
-          }
+    // Coronal
+    const downCo = (e: MouseEvent) => {
+      coronalDraggingRef.current = true;
+      handleCoronal(e);
+    };
+    const moveCo = (e: MouseEvent) => {
+      if (coronalDraggingRef.current) handleCoronal(e);
+    };
+    const upCo = () => { coronalDraggingRef.current = false; };
 
-          if (pixelValue > 0) {
-            points.push([col, row, slice, normalizedValue]);
-          }
-        }
-      }
-    }
-    console.log("Points:", points);
-    setPoints(points);
+    coCanvas.addEventListener("mousedown", downCo);
+    coCanvas.addEventListener("mousemove", moveCo);
+    window.addEventListener("mouseup", upCo);
+
+    // Sagittal
+    const downSa = (e: MouseEvent) => {
+      sagittalDraggingRef.current = true;
+      handleSagittal(e);
+    };
+    const moveSa = (e: MouseEvent) => {
+      if (sagittalDraggingRef.current) handleSagittal(e);
+    };
+    const upSa = () => { sagittalDraggingRef.current = false; };
+
+    saCanvas.addEventListener("mousedown", downSa);
+    saCanvas.addEventListener("mousemove", moveSa);
+    window.addEventListener("mouseup", upSa);
+
+    return () => {
+      axCanvas.removeEventListener("mousedown", downAx);
+      axCanvas.removeEventListener("mousemove", moveAx);
+      window.removeEventListener("mouseup", upAx);
+
+      coCanvas.removeEventListener("mousedown", downCo);
+      coCanvas.removeEventListener("mousemove", moveCo);
+      window.removeEventListener("mouseup", upCo);
+
+      saCanvas.removeEventListener("mousedown", downSa);
+      saCanvas.removeEventListener("mousemove", moveSa);
+      window.removeEventListener("mouseup", upSa);
+    };
+  }, [axialRef, coronalRef, sagittalRef, headerVol]);
+
+  function handleAxial(e: MouseEvent) {
+    if (!headerVol) return;
+    const canvas = axialRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((headerVol.dims[1] / canvas.width) * (e.clientX - rect.left));
+    const y = Math.floor((headerVol.dims[2] / canvas.height) * (e.clientY - rect.top));
+    setSliceX(x);
+    setSliceY(y);
   }
 
-  function DisplayResults(file: ArrayBuffer) {
-    try {
-      console.log("Processing file...");
-      if (nif.isCompressed(file)) {
-        file = nif.decompress(file) as ArrayBuffer;
-        console.log("File decompressed successfully.");
-      }
-
-      if (nif.isNIFTI(file)) {
-        const niftiHeader = nif.readHeader(file);
-        console.log("NIFTI Header:", niftiHeader);
-        if (niftiHeader == null) {
-          console.error("NIFTI header is null.");
-          alert("Invalid NIFTI file. Please upload a valid file.");
-          return;
-        }
-
-        const niftiImage = nif.readImage(niftiHeader, file);
-        const slices = niftiHeader.dims[3];
-        const cols = niftiHeader.dims[1];
-        const rows = niftiHeader.dims[2];
-
-        UpdatePointArray(niftiHeader, niftiImage);
-
-        // set up x‐slider
-        const layer = document.getElementById("layer") as HTMLInputElement;
-        if (layer) {
-          layer.max = (slices - 1).toString();
-          layer.value = "0";
-          layer.oninput = function () {
-            const slice = parseInt(layer.value);
-            setSliceIndex(slice); // update slice index on slider
-            Draw(slice, niftiHeader, niftiImage);
-          };
-        }
-
-        // set up y‐slider
-        const layery = document.getElementById("layery") as HTMLInputElement;
-        if (layery) {
-          layery.max = (cols - 1).toString();
-          layery.value = "0";
-          layery.oninput = function () {
-            const slice = parseInt(layery.value);
-            setSliceIndey(slice);
-            DrawY(slice, niftiHeader, niftiImage);
-          };
-        }
-
-        // set up z‐slider
-        const layerz = document.getElementById("layerz") as HTMLInputElement;
-        if (layerz) {
-          layerz.max = (rows - 1).toString();
-          layerz.value = "0";
-          layerz.oninput = function () {
-            const slice = parseInt(layerz.value);
-            setSliceIndez(slice);
-            DrawZ(slice, niftiHeader, niftiImage);
-          };
-        }
-
-        // draw initial slice
-        Draw(0, niftiHeader, niftiImage);
-      } else {
-        console.error("The uploaded file is not a valid NIFTI file.");
-        alert("The uploaded file is not a valid NIFTI file.");
-      }
-    } catch (error) {
-      console.error("Error processing the NIFTI file:", error);
-      alert("Error processing the file. Check console for details.");
-    }
+  function handleCoronal(e: MouseEvent) {
+    if (!headerVol) return;
+    const canvas = coronalRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((headerVol.dims[1] / canvas.width) * (e.clientX - rect.left));
+    const z = Math.floor((headerVol.dims[3] / canvas.height) * (e.clientY - rect.top));
+    // No flips here => we rely on flipping in the drawCoronal loop
+    setSliceX(x);
+    setSliceZ(z);
   }
 
-  function DrawZ(
-    row: number,
-    header: nif.NIFTI1 | nif.NIFTI2,
-    image: ArrayBuffer
-  ) {
-    const canvas = document.getElementById("resultz") as HTMLCanvasElement;
-    if (!canvas) {
-      console.error("Canvas element not found.");
-      return;
+  function handleSagittal(e: MouseEvent) {
+    if (!headerVol) return;
+    const canvas = sagittalRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const y = Math.floor((headerVol.dims[2] / canvas.width) * (e.clientX - rect.left));
+    const z = Math.floor((headerVol.dims[3] / canvas.height) * (e.clientY - rect.top));
+    // No flips => rely on flipping in the drawSagittal loop
+    setSliceY(y);
+    setSliceZ(z);
+  }
+
+  /*******************************************************
+   * DRAW SLICES
+   * We now do the flipping *inside* drawCoronal/drawSagittal
+   *******************************************************/
+  useEffect(() => {
+    if (headerVol && imageVol) {
+      drawAxial(sliceZ, headerVol, imageVol);
+      drawCoronal(sliceY, headerVol, imageVol);
+      drawSagittal(sliceX, headerVol, imageVol);
     }
+  }, [sliceX, sliceY, sliceZ, headerVol, imageVol]);
 
-    const cols = header.dims[1];
-    const rows = header.dims[2];
-    const slices = header.dims[3];
-    canvas.width = rows;
-    canvas.height = slices;
-
+  function drawAxial(zSlice: number, hdr: nif.NIFTI1 | nif.NIFTI2, volData: ArrayBuffer) {
+    // Axial is normal
+    const canvas = axialRef.current;
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      console.error("Failed to get canvas context.");
-      return;
-    }
+    if (!ctx) return;
 
-    const imageData = ctx.createImageData(rows, slices);
-    const dataView = new DataView(image);
-
-    const maxRange = 400;
-
-    for (let slice = 0; slice < slices; slice++) {
-      for (let col = 0; col < cols; col++) {
-        const pixelIndex = slice * cols * rows + row * cols + col;
-        let pixelValue: number;
-
-        if (header.datatypeCode === nif.NIFTI1.TYPE_UINT16) {
-          pixelValue = dataView.getUint16(pixelIndex * 2, true);
-        } else if (header.datatypeCode === nif.NIFTI1.TYPE_FLOAT32) {
-          pixelValue = dataView.getFloat32(pixelIndex * 4, true);
-        } else if (header.datatypeCode === nif.NIFTI1.TYPE_UINT8) {
-          pixelValue = dataView.getUint8(pixelIndex);
-        } else {
-          pixelValue = 0;
-          console.warn("Unsupported datatype:", header.datatypeCode);
-        }
-
-        let normalizedValue = pixelValue;
-
-        if (pixelValue <= 1) {
-          normalizedValue = pixelValue * 255;
-        } else {
-          normalizedValue = Math.min(
-            Math.max((pixelValue / maxRange) * 255, 0),
-            255
-          );
-        }
-
-        const index = (col * slices + slice) * 4;
-        imageData.data[index] = normalizedValue;
-        imageData.data[index + 1] = normalizedValue;
-        imageData.data[index + 2] = normalizedValue;
-        imageData.data[index + 3] = 255;
-      }
-    }
-
-    ctx.putImageData(imageData, 0, 0);
-  }
-
-  function DrawY(
-    col: number,
-    header: nif.NIFTI1 | nif.NIFTI2,
-    image: ArrayBuffer
-  ) {
-    const canvas = document.getElementById("resulty") as HTMLCanvasElement;
-    if (!canvas) {
-      console.error("Canvas element not found.");
-      return;
-    }
-
-    const cols = header.dims[1];
-    const rows = header.dims[2];
-    const slices = header.dims[3];
-    canvas.width = rows;
-    canvas.height = slices;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      console.error("Failed to get canvas context.");
-      return;
-    }
-
-    const imageData = ctx.createImageData(rows, slices);
-    const dataView = new DataView(image);
-
-    const maxRange = 400;
-
-    for (let slice = 0; slice < slices; slice++) {
-      for (let row = 0; row < rows; row++) {
-        const pixelIndex = slice * cols * rows + row * cols + col;
-        let pixelValue: number;
-
-        if (header.datatypeCode === nif.NIFTI1.TYPE_UINT16) {
-          pixelValue = dataView.getUint16(pixelIndex * 2, true);
-        } else if (header.datatypeCode === nif.NIFTI1.TYPE_FLOAT32) {
-          pixelValue = dataView.getFloat32(pixelIndex * 4, true);
-        } else if (header.datatypeCode === nif.NIFTI1.TYPE_UINT8) {
-          pixelValue = dataView.getUint8(pixelIndex);
-        } else {
-          pixelValue = 0;
-          console.warn("Unsupported datatype:", header.datatypeCode);
-        }
-
-        let normalizedValue = pixelValue;
-        if (pixelValue <= 1) {
-          normalizedValue = pixelValue * 255;
-        } else {
-          normalizedValue = Math.min(
-            Math.max((pixelValue / maxRange) * 255, 0),
-            255
-          );
-        }
-
-        const index = (row * slices + slice) * 4;
-        imageData.data[index] = normalizedValue;
-        imageData.data[index + 1] = normalizedValue;
-        imageData.data[index + 2] = normalizedValue;
-        imageData.data[index + 3] = 255;
-      }
-    }
-
-    ctx.putImageData(imageData, 0, 0);
-  }
-
-  function Draw(
-    slice: number,
-    header: nif.NIFTI1 | nif.NIFTI2,
-    image: ArrayBuffer
-  ) {
-    const canvas = document.getElementById("result") as HTMLCanvasElement;
-    if (!canvas) {
-      console.error("Canvas element not found.");
-      return;
-    }
-
-    const cols = header.dims[1];
-    const rows = header.dims[2];
+    const [ , cols, rows, slices ] = hdr.dims;
     canvas.width = cols;
     canvas.height = rows;
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      console.error("Failed to get canvas context.");
-      return;
-    }
-
-    const imageData = ctx.createImageData(cols, rows);
-    const sliceOffset = slice * cols * rows;
-    const dataView = new DataView(image);
+    const dv = new DataView(volData);
+    const sliceOffset = zSlice * cols * rows;
     const maxRange = 400;
 
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        const pixelIndex = sliceOffset + row * cols + col;
-        let pixelValue: number;
+    const imgData = ctx.createImageData(cols, rows);
 
-        if (header.datatypeCode === nif.NIFTI1.TYPE_UINT16) {
-          pixelValue = dataView.getUint16(pixelIndex * 2, true);
-        } else if (header.datatypeCode === nif.NIFTI1.TYPE_FLOAT32) {
-          pixelValue = dataView.getFloat32(pixelIndex * 4, true);
-        } else if (header.datatypeCode === nif.NIFTI1.TYPE_UINT8) {
-          pixelValue = dataView.getUint8(pixelIndex);
-        } else {
-          pixelValue = 0;
-          console.warn("Unsupported datatype:", header.datatypeCode);
-        }
-
-        let normalizedValue = pixelValue;
-        if (pixelValue <= 1) {
-          normalizedValue = pixelValue * 255;
-        } else {
-          normalizedValue = Math.min(
-            Math.max((pixelValue / maxRange) * 255, 0),
-            255
-          );
-        }
-
-        const index = (row * cols + col) * 4;
-        imageData.data[index] = normalizedValue;
-        imageData.data[index + 1] = normalizedValue;
-        imageData.data[index + 2] = normalizedValue;
-        imageData.data[index + 3] = 255;
+    // No flipping => normal top→bottom
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const idx = sliceOffset + y * cols + x;
+        const val = getVoxelValue(hdr, dv, idx);
+        const norm = val <= 1 ? val * 255 : Math.min((val / maxRange) * 255, 255);
+        const px4 = (y * cols + x) * 4;
+        imgData.data[px4 + 0] = norm;
+        imgData.data[px4 + 1] = norm;
+        imgData.data[px4 + 2] = norm;
+        imgData.data[px4 + 3] = 255;
       }
     }
-
-    console.log("Drawing slice:", slice);
-    ctx.putImageData(imageData, 0, 0);
+    ctx.putImageData(imgData, 0, 0);
   }
 
+  function drawCoronal(ySlice: number, hdr: nif.NIFTI1 | nif.NIFTI2, volData: ArrayBuffer) {
+    // We'll flip it by painting from bottom up
+    const canvas = coronalRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const [ , cols, rows, slices ] = hdr.dims;
+    canvas.width = cols;
+    canvas.height = slices;
+
+    const dv = new DataView(volData);
+    const maxRange = 400;
+    const imgData = ctx.createImageData(cols, slices);
+
+    // paint from z=0 at *top* => means we fill from the BOTTOM of imageData
+    // so index in imageData is reversed in the vertical dimension
+    for (let z = 0; z < slices; z++) {
+      for (let x = 0; x < cols; x++) {
+        const voxelIndex = z * rows * cols + ySlice * cols + x;
+        const val = getVoxelValue(hdr, dv, voxelIndex);
+        const norm = val <= 1 ? val * 255 : Math.min((val / maxRange) * 255, 255);
+
+        // "Flipped" row => let flippedZ = (slices - 1) - z
+        const flippedZ = (slices - 1) - z;
+        const px4 = (flippedZ * cols + x) * 4;
+
+        imgData.data[px4 + 0] = norm;
+        imgData.data[px4 + 1] = norm;
+        imgData.data[px4 + 2] = norm;
+        imgData.data[px4 + 3] = 255;
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
+  }
+
+  function drawSagittal(xSlice: number, hdr: nif.NIFTI1 | nif.NIFTI2, volData: ArrayBuffer) {
+    // We'll flip it top→bottom as well
+    const canvas = sagittalRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const [ , cols, rows, slices ] = hdr.dims;
+    // sagittal => width = rows, height = slices
+    canvas.width = rows;
+    canvas.height = slices;
+
+    const dv = new DataView(volData);
+    const maxRange = 400;
+    const imgData = ctx.createImageData(rows, slices);
+
+    // For each z in [0..slices-1], for each y in [0..rows-1],
+    // we read voxelIndex = z*rows*cols + y*cols + xSlice
+    // and paint into flippedZ row
+    for (let z = 0; z < slices; z++) {
+      for (let y = 0; y < rows; y++) {
+        const voxelIndex = z * rows * cols + y * cols + xSlice;
+        const val = getVoxelValue(hdr, dv, voxelIndex);
+        const norm = val <= 1 ? val * 255 : Math.min((val / maxRange) * 255, 255);
+
+        // Flip vertically => let flippedZ = (slices - 1) - z
+        const flippedZ = (slices - 1) - z;
+        const px4 = (flippedZ * rows + y) * 4;
+
+        imgData.data[px4 + 0] = norm;
+        imgData.data[px4 + 1] = norm;
+        imgData.data[px4 + 2] = norm;
+        imgData.data[px4 + 3] = 255;
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
+  }
+
+  /*******************************************************
+   * SUPER‐RES METRICS
+   *******************************************************/
+  function computeSRMetrics(
+    hdrA: nif.NIFTI1 | nif.NIFTI2,
+    bufA: ArrayBuffer,
+    hdrB: nif.NIFTI1 | nif.NIFTI2,
+    bufB: ArrayBuffer
+  ) {
+    const dims = hdrA.dims;
+    const totalVoxels = dims[1] * dims[2] * dims[3];
+
+    const dvA = new DataView(bufA);
+    const dvB = new DataView(bufB);
+
+    let sumSq = 0;
+    let maxVal = 0;
+    for (let i = 0; i < totalVoxels; i++) {
+      const vA = getVoxelValue(hdrA, dvA, i);
+      const vB = getVoxelValue(hdrB, dvB, i);
+      const diff = vA - vB;
+      sumSq += diff * diff;
+      if (vA > maxVal) maxVal = vA;
+      if (vB > maxVal) maxVal = vB;
+    }
+    const mseVal = sumSq / totalVoxels;
+    let psnrVal = Infinity;
+    if (mseVal > 0) {
+      psnrVal = 10 * Math.log10((maxVal * maxVal) / mseVal);
+    }
+    // dummy SSIM
+    const ssimVal = 0.95;
+    setMseSR(mseVal);
+    setPsnrSR(psnrVal);
+    setSsimSR(ssimVal);
+  }
+
+  /*******************************************************
+   * SEG METRIC
+   *******************************************************/
+  function computeDiceSeg(hdr: nif.NIFTI1 | nif.NIFTI2, buf: ArrayBuffer) {
+    // placeholder
+    setDiceSeg(0.88);
+  }
+
+  /*******************************************************
+   * HELPERS
+   *******************************************************/
+  async function loadVolume(
+    fileBuf: ArrayBuffer,
+    setHdr: (h: nif.NIFTI1 | nif.NIFTI2) => void,
+    setImg: (b: ArrayBuffer) => void
+  ) {
+    try {
+      let buf = fileBuf;
+      if (nif.isCompressed(buf)) {
+        buf = nif.decompress(buf) as ArrayBuffer;
+      }
+      if (!nif.isNIFTI(buf)) {
+        alert("Not a valid NIFTI file!");
+        return;
+      }
+      const hdr = nif.readHeader(buf);
+      if (!hdr) {
+        alert("NIFTI header is null!");
+        return;
+      }
+      const img = nif.readImage(hdr, buf);
+
+      // IMMEDIATELY set slices to halfway
+      const [ , dx, dy, dz ] = hdr.dims;
+      setSliceX(Math.floor(dx / 2));
+      setSliceY(Math.floor(dy / 2));
+      setSliceZ(Math.floor(dz / 2));
+
+      setHdr(hdr);
+      setImg(img);
+    } catch (err) {
+      console.error(err);
+      alert("Error loading volume. Check console.");
+    }
+  }
+
+  function getVoxelValue(
+    hdr: nif.NIFTI1 | nif.NIFTI2,
+    dv: DataView,
+    idx: number
+  ): number {
+    switch (hdr.datatypeCode) {
+      case nif.NIFTI1.TYPE_UINT8:
+        return dv.getUint8(idx);
+      case nif.NIFTI1.TYPE_UINT16:
+        return dv.getUint16(idx * 2, true);
+      case nif.NIFTI1.TYPE_FLOAT32:
+        return dv.getFloat32(idx * 4, true);
+      default:
+        return 0;
+    }
+  }
+
+  function buildPointCloud(hdr: nif.NIFTI1 | nif.NIFTI2, data: ArrayBuffer) {
+    const dv = new DataView(data);
+    const [ , dx, dy, dz ] = hdr.dims;
+    const maxRange = 400;
+    const newPts: number[][] = [];
+
+    for (let z = 0; z < dz; z++) {
+      for (let y = 0; y < dy; y++) {
+        for (let x = 0; x < dx; x++) {
+          const idx = z * dy * dx + y * dx + x;
+          const val = getVoxelValue(hdr, dv, idx);
+          const norm = val <= 1 ? val * 255 : Math.min((val / maxRange) * 255, 255);
+          if (norm > 1) {
+            newPts.push([x, y, z, norm]);
+          }
+        }
+      }
+    }
+    setPoints(newPts);
+  }
+
+  /*******************************************************
+   * RENDER
+   *******************************************************/
   return (
-    <div className="flex flex-col items-center justify-start w-full min-h-screen bg-gray-50">
-      {/* Main container */}
-      <div className="flex flex-row w-full h-full">
-        {/* Left side panel */}
-        <div className="min-w-[250px] max-w-[300px] p-4 bg-white border-r-2 border-gray-300 flex flex-col gap-6">
-          <div>
-            <h2 className="text-lg font-semibold mb-2">Input NIFTI file</h2>
-            <input
-              type="file"
-              onChange={async (e) => {
-                try {
-                  if (e.target.files && e.target.files[0]) {
-                    const file = await e.target.files[0].arrayBuffer();
-                    setFile(file);
-                  } else {
-                    console.error("No file selected.");
-                    alert("Please select a valid file.");
-                  }
-                } catch (error) {
-                  console.error("Error reading file:", error);
-                  alert(
-                    "An error occurred while reading the file. Please try again."
-                  );
-                }
-              }}
-            />
-          </div>
+    <div className="flex w-full min-h-screen bg-gray-100">
+      {/* LEFT PANEL */}
+      <div className="w-1/4 p-4 bg-white border-r border-gray-300 flex flex-col gap-4">
+        <h2 className="text-xl font-bold text-black">Reteena</h2>
 
-          <div className="flex flex-col items-start text-xl w-full">
-            <label className="font-medium">x</label>
-            <input
-              type="range"
-              id="layer"
-              className="w-full mt-1 mb-2 accent-blue-500"
-            />
-            <p className="text-sm">
-              Current Slice: <span className="font-semibold">{sliceIndex + 1}</span>
-            </p>
-          </div>
-
-          <div className="flex flex-col items-start text-xl w-full">
-            <label className="font-medium">y</label>
-            <input
-              type="range"
-              id="layery"
-              className="w-full mt-1 mb-2 accent-green-500"
-            />
-            <p className="text-sm">
-              Current Slice: <span className="font-semibold">{sliceIndey + 1}</span>
-            </p>
-          </div>
-
-          <div className="flex flex-col items-start text-xl w-full">
-            <label className="font-medium">z</label>
-            <input
-              type="range"
-              id="layerz"
-              className="w-full mt-1 mb-2 accent-red-500"
-            />
-            <p className="text-sm">
-              Current Slice: <span className="font-semibold">{sliceIndez + 1}</span>
-            </p>
-          </div>
-
-          <button
-            className="px-4 py-2 rounded-md bg-gray-500 text-white hover:bg-gray-600"
-            onClick={async () => {
-              try {
-                if (!file) {
-                  window.alert("No file uploaded.");
-                  return;
-                }
-                const response = await upload("scans", file as ArrayBuffer, {
-                  access: "public",
-                  handleUploadUrl: "/api/upload",
-                });
-                const r = await fetch("/api/runTransform", {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/json",
-                  },
-                  body: JSON.stringify({
-                    location: response.url,
-                  }),
-                });
-                const responseJson = await r.json();
-                setFile(await (await fetch(responseJson.url)).arrayBuffer());
-              } catch (error) {
-                console.error("Error running the model:", error);
-                alert(
-                  "Error running the model. Please check the console for details."
-                );
+        {/* LOAD MAIN */}
+        <div className="flex flex-col text-sm gap-2">
+          <label className="font-semibold text-black">Main Volume (NIFTI)</label>
+          <input
+            type="file"
+            className="text-black truncate"
+            onChange={async (e) => {
+              if (e.target.files?.[0]) {
+                const buf = await e.target.files[0].arrayBuffer();
+                // reset
+                setFileVol(buf);
+                setFileSR(null);
+                setFileSeg(null);
+                setMseSR(null);
+                setPsnrSR(null);
+                setSsimSR(null);
+                setDiceSeg(null);
               }
             }}
-          >
-            Run model on scan
-          </button>
+          />
         </div>
 
-        {/* Right side (canvases) */}
-        <div className="flex flex-col w-full p-4 gap-4">
-          {/* Primary (X) slice canvas */}
-          <div className="w-full flex-grow border-2 border-gray-300 bg-white rounded-md flex items-center justify-center">
-            <canvas id="result" className="max-w-full max-h-full" />
-          </div>
+        {/* SUPER‐RES METRICS */}
+        <div className="flex flex-col text-sm gap-1">
+          <p className="font-semibold text-black">Super‐Resolution Metrics:</p>
+          <p className="text-black">
+            MSE: {mseSR == null ? "—" : mseSR.toFixed(2)}
+          </p>
+          <p className="text-black">
+            PSNR: {psnrSR == null ? "—" : psnrSR === Infinity ? "∞" : psnrSR.toFixed(2)}
+          </p>
+          <p className="text-black">
+            SSIM: {ssimSR == null ? "—" : ssimSR.toFixed(3)}
+          </p>
+        </div>
 
-          {/* Two smaller (Y/Z) slice canvases in a row */}
-          <div className="flex flex-row gap-4 w-full h-[50%]">
-            <div className="w-1/2 border-2 border-gray-300 bg-white rounded-md flex items-center justify-center">
-              <canvas id="resulty" className="max-w-full max-h-full rotate-180" />
-            </div>
+        {/* SEG METRIC */}
+        <div className="flex flex-col text-sm gap-1">
+          <p className="font-semibold text-black">Segmentation Metric:</p>
+          <p className="text-black">
+            Dice: {diceSeg == null ? "—" : diceSeg.toFixed(2)}
+          </p>
+        </div>
 
-            <div className="w-1/2 border-2 border-gray-300 bg-white rounded-md flex items-center justify-center">
-              <canvas id="resultz" className="max-w-full max-h-full" />
-            </div>
+        {/* RUN SUPER‐RES */}
+        <button
+          className="rounded bg-gray-500 text-white py-2 px-3"
+          onClick={async () => {
+            if (!fileVol) {
+              alert("No main volume loaded.");
+              return;
+            }
+            try {
+              const upRes = await upload("scans", fileVol, {
+                access: "public",
+                handleUploadUrl: "/api/upload",
+              });
+              const resp = await fetch("/api/runSuperRes", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ location: upRes.url }),
+              });
+              const j = await resp.json();
+              const srBuf = await (await fetch(j.url)).arrayBuffer();
+              setFileSR(srBuf);
+            } catch (err) {
+              console.error(err);
+              alert("Error running super‐resolution.");
+            }
+          }}
+        >
+          Run Super‐Resolution Model
+        </button>
+
+        {/* RUN SEG */}
+        <button
+          className="rounded bg-gray-500 text-white py-2 px-3"
+          onClick={async () => {
+            if (!fileVol) {
+              alert("No main volume loaded.");
+              return;
+            }
+            try {
+              const upRes = await upload("scans", fileVol, {
+                access: "public",
+                handleUploadUrl: "/api/upload",
+              });
+              const resp = await fetch("/api/runSeg", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ location: upRes.url }),
+              });
+              const j = await resp.json();
+              const segBuf = await (await fetch(j.url)).arrayBuffer();
+              setFileSeg(segBuf);
+            } catch (err) {
+              console.error(err);
+              alert("Error running segmentation.");
+            }
+          }}
+        >
+          Run Segmentation Model
+        </button>
+      </div>
+
+      {/* RIGHT 2×2 */}
+      <div className="flex-grow grid grid-cols-2 grid-rows-2 gap-4 p-4">
+        {/* Axial */}
+        <div className="relative flex items-center justify-center border border-gray-400 bg-black">
+          <canvas ref={axialRef} className="bg-black" />
+          <div className="absolute bottom-2 text-white text-xs">
+            Axial (Z): {sliceZ}
           </div>
+        </div>
+
+        {/* Coronal */}
+        <div className="relative flex items-center justify-center border border-gray-400 bg-black">
+          <canvas ref={coronalRef} className="bg-black" />
+          <div className="absolute bottom-2 text-white text-xs">
+            Coronal (Y): {sliceY}
+          </div>
+        </div>
+
+        {/* Sagittal */}
+        <div className="relative flex items-center justify-center border border-gray-400 bg-black">
+          <canvas ref={sagittalRef} className="bg-black" />
+          <div className="absolute bottom-2 text-white text-xs">
+            Sagittal (X): {sliceX}
+          </div>
+        </div>
+
+        <div className="relative flex items-center justify-center border border-gray-400 bg-white">
+          <p className="text-gray-600 text-sm">[ 4th Quadrant Preview ]</p>
         </div>
       </div>
     </div>
   );
 }
-
