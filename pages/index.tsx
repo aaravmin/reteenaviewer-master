@@ -5,6 +5,11 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 export default function Home() {
+  const otherAxialRef = useRef<HTMLCanvasElement | null>(null);
+  const otherCoronalRef = useRef<HTMLCanvasElement | null>(null);
+  const otherSagittalRef = useRef<HTMLCanvasElement | null>(null);
+  const [otherFile, setOtherFile] = useState<ArrayBuffer | null>(null);
+  const [otherHeaderVol, setOtherHeaderVol] = useState<nif.NIFTI1 | nif.NIFTI2 | null>(null);
   // MAIN volume
   const [fileVol, setFileVol] = useState<ArrayBuffer | null>(null);
   const [headerVol, setHeaderVol] = useState<nif.NIFTI1 | nif.NIFTI2 | null>(null);
@@ -55,6 +60,11 @@ export default function Home() {
       loadVolume(fileVol, (hdr) => setHeaderVol(hdr), (img) => setImageVol(img));
     }
   }, [fileVol]);
+  useEffect(() => {
+    if (otherFile) {
+      loadVolume(otherFile, (hdr) => setOtherHeaderVol(hdr), (img) => setOtherFile(img));
+    }
+  }, [otherFile]);
 
   /*******************************************************
    * BUILD POINT CLOUD WHEN main volume ready
@@ -88,7 +98,6 @@ export default function Home() {
       loadVolume(fileSeg, setHeaderSeg, setImageSeg);
     }
   }, [fileSeg]);
-
   useEffect(() => {
     if (headerSeg && imageSeg) {
       computeDiceSeg(headerSeg, imageSeg);
@@ -242,14 +251,21 @@ export default function Home() {
   useEffect(() => {
     if (headerVol && imageVol) {
       drawAxial(sliceZ, headerVol, imageVol);
+      drawAxial(sliceZ, otherHeaderVol, otherFile || new ArrayBuffer(0), true);
       drawCoronal(sliceY, headerVol, imageVol);
+      drawCoronal(sliceY, otherHeaderVol, otherFile || new ArrayBuffer(0), true);
       drawSagittal(sliceX, headerVol, imageVol);
+      drawSagittal(sliceX, otherHeaderVol, otherFile || new ArrayBuffer(0), true)
     }
   }, [sliceX, sliceY, sliceZ, headerVol, imageVol]);
 
-  function drawAxial(zSlice: number, hdr: nif.NIFTI1 | nif.NIFTI2, volData: ArrayBuffer) {
+  function drawAxial(zSlice: number, hdr: nif.NIFTI1 | nif.NIFTI2 | null, volData: ArrayBuffer, mini: boolean = false) {
+    if(!hdr) return;
     // Axial is normal
-    const canvas = axialRef.current;
+    let canvas = axialRef.current;
+    if(mini) {
+      canvas = otherAxialRef.current;
+    }
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -280,9 +296,13 @@ export default function Home() {
     ctx.putImageData(imgData, 0, 0);
   }
 
-  function drawCoronal(ySlice: number, hdr: nif.NIFTI1 | nif.NIFTI2, volData: ArrayBuffer) {
+  function drawCoronal(ySlice: number, hdr: nif.NIFTI1 | nif.NIFTI2 | null, volData: ArrayBuffer, mini: boolean = false) {
     // We'll flip it by painting from bottom up
-    const canvas = coronalRef.current;
+    if(!hdr) return;
+    let canvas = coronalRef.current;
+    if(mini) {
+      canvas = otherCoronalRef.current;
+    }
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -316,9 +336,14 @@ export default function Home() {
     ctx.putImageData(imgData, 0, 0);
   }
 
-  function drawSagittal(xSlice: number, hdr: nif.NIFTI1 | nif.NIFTI2, volData: ArrayBuffer) {
+  function drawSagittal(xSlice: number, hdr: nif.NIFTI1 | nif.NIFTI2 | null, volData: ArrayBuffer, mini: boolean = false) {
+    if(!hdr) return;
+
     // We'll flip it top→bottom as well
-    const canvas = sagittalRef.current;
+    let canvas = sagittalRef.current;
+     if(mini) {
+      canvas = otherSagittalRef.current;
+    }
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -413,7 +438,6 @@ export default function Home() {
         buf = nif.decompress(buf) as ArrayBuffer;
       }
       if (!nif.isNIFTI(buf)) {
-        alert("Not a valid NIFTI file!");
         return;
       }
       const hdr = nif.readHeader(buf);
@@ -495,6 +519,7 @@ export default function Home() {
                 const buf = await e.target.files[0].arrayBuffer();
                 // reset
                 setFileVol(buf);
+                setOtherFile(buf);
                 setFileSR(null);
                 setFileSeg(null);
                 setMseSR(null);
@@ -590,9 +615,10 @@ export default function Home() {
       </div>
 
       {/* RIGHT 2×2 */}
-      <div className="flex-grow grid grid-cols-2 grid-rows-2 gap-4 p-4">
+      <div className="flex-grow grid grid-cols-2 grid-rows-2  p-4">
         {/* Axial */}
-        <div className="relative flex items-center justify-center border border-gray-400 bg-black">
+        <div className="relative flex items-center justify-center border border-gray-400 bg-black p-4">
+        <canvas ref={otherAxialRef} className="bg-black absolute right-0 top-0 w-[20%] border-white border-2 "  />
           <canvas ref={axialRef} className="bg-black" />
           <div className="absolute bottom-2 text-white text-xs">
             Axial (Z): {sliceZ}
@@ -601,6 +627,7 @@ export default function Home() {
 
         {/* Coronal */}
         <div className="relative flex items-center justify-center border border-gray-400 bg-black">
+        <canvas ref={otherCoronalRef} className="bg-black absolute right-0 top-0 w-[20%]  border-white border-2"  />
           <canvas ref={coronalRef} className="bg-black" />
           <div className="absolute bottom-2 text-white text-xs">
             Coronal (Y): {sliceY}
@@ -609,6 +636,7 @@ export default function Home() {
 
         {/* Sagittal */}
         <div className="relative flex items-center justify-center border border-gray-400 bg-black">
+        <canvas ref={otherSagittalRef} className="bg-black absolute right-0 top-0 w-[20%] border-white border-2 "  />
           <canvas ref={sagittalRef} className="bg-black" />
           <div className="absolute bottom-2 text-white text-xs">
             Sagittal (X): {sliceX}
